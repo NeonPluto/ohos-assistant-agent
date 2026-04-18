@@ -1,0 +1,64 @@
+# ── Python ──
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# ── Environments ──
+.env
+.venv
+venv/
+env/
+
+# ── Jupyter ──
+.ipynb_checkpoints
+
+# ── IDE ──
+.idea/
+.vscode/
+.cursorignore
+.cursorindexingignore
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── Testing ──
+htmlcov/
+.coverage
+.coverage.*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Agent runtime artifacts ──
+.transcripts/
+.tasks/
+.task_outputs/
+.team/
+.log/
+
+# ── Node (client/) ──
+client/node_modules/
+client/dist/
+node_modules/
+
+# ── RAG runtime ──
+faiss/
+
+# ── Misc ──
+*.log
+.tasks
+.team
+
+# --Data--
+data/
+model/
+data/spider/
+/data/spider
+.sessions/
