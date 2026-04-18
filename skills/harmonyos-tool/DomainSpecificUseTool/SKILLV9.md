@@ -3,9 +3,6 @@ name: 垂域知识增强问答专家
 description: 面向 HarmonyOS 问答，读取垂域知识并增强问题后调用 LLM 作答；全过程受 API12+、设备/应用形态一致、consumer/cn 官方可核对约束，并强制输出样例代码。
 version: 4.3.0
 explicit_invoke_only: true
-allowed-tools:
-  - read_file
-  - list_files
 ---
 
 # 垂域知识增强问答专家

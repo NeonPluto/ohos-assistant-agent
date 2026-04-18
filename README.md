@@ -162,7 +162,7 @@ deactivate
 ## 使用说明（WebUI）
 
 1. **会话**：支持新建、切换、按会话 ID 切换；历史保存在 `.sessions/<session_id>.json`。
-2. **Skill**：`skills` 目录下各 `SKILL.md` 的 `triggers` 若与用户输入前缀匹配，会自动触发 `load_skill`。
+2. **Skill**：`skills` 目录下各 `SKILL.md` 的 `triggers` 若与用户输入前缀匹配，会自动触发 `load_skill`（**不含** frontmatter 中 `explicit_invoke_only: true` 的 Skill）。显式专用 Skill 须首行写 `/invoke_skill <name>` 换行后再写问题，或在 WebUI 选择「显式启用 Skill」；此类 Skill 不会出现在系统提示的可用列表中，且 `load_skill` 会被拒绝加载。
 3. **文件工具**：Agent 仅能在**当前工作区（仓库根目录）**内读写与列举路径，请勿将仓库根设到不受信任的位置。
 
 ## 常见问题
