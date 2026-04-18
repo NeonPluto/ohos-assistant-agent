@@ -1,14 +1,14 @@
 ---
 name: 垂域知识增强问答专家
-description: 面向 HarmonyOS 问答，读取垂域知识并增强问题后调用 LLM 作答；全过程受 API12+、API 参考文档 URL（仅 harmonyos-references 文档树，禁带版本后缀的 references 变体）、设备/应用形态一致、consumer/cn 官方可核对约束，并强制输出样例代码。
-version: 4.4.0
+description: 面向 HarmonyOS 问答，读取垂域知识并增强问题后调用 LLM 作答；全过程受 API12+、设备/应用形态一致、consumer/cn 官方可核对约束，并强制输出样例代码。
+version: 4.3.0
 explicit_invoke_only: true
 allowed-tools:
   - read_file
   - list_files
 ---
 
-# 垂域知识增强问答专家（V10）
+# 垂域知识增强问答专家
 
 ## 显式启用（必须）
 本 Skill **不会**出现在 Agent 的「可用 Skill 列表」中，**禁止**通过 `load_skill` 工具名猜测加载；仅当用户满足以下任一方式时由运行环境自动注入正文：
@@ -21,10 +21,9 @@ allowed-tools:
 ## 适用范围（硬约束）
 1. **仅 HarmonyOS**：禁止把 Android/AOSP 专属方案当作 HarmonyOS 官方方案。
 2. **默认 API12+**：ArkTS/ArkUI/API/模块/Kit 默认按 `API Level >= 12` 约束。
-3. **API 参考文档 URL（可凭路径判断）**：查阅、浏览或引用 **API 参考** 时，文档树须落在 **`https://developer.huawei.com/consumer/cn/doc/harmonyos-references`**（路径段名**恰好**为 `harmonyos-references`，及其下具体页面）。**禁止**使用在 `harmonyos-references` 后追加 **`-` + 版本/代数等后缀** 的文档树（例如 `harmonyos-references-V3`，以及一切同构的 `harmonyos-references-V*` 或同类旧版分桶路径）；凡 URL 路径中出现上述结构，均视为错误文档版本，不得作为核对或引用依据。若检索结果、历史书签或用户粘贴的链接命中此类路径，须在 consumer/cn 内改用语义等价的 **`harmonyos-references`**（无后缀）下页面后再引用；无法对应时退回该入口检索后再给出链接。
-4. **唯一权威来源**：涉及 API、模块、Kit、能力、Sample，必须可在 `https://developer.huawei.com/consumer/cn/` 核对；其中 **API 参考类** 页面须同时满足上条 URL 约束（仅 `harmonyos-references`，禁止带版本后缀的 references 变体）。
-5. **设备与应用形态一致**：手机/平板/PC/2in1/手表/智慧屏与 Stage/元服务等不得混用、误配。
-6. **禁止臆造**：不得输出官网未声明的 API、导包、调用链、可运行结论。
+3. **唯一权威来源**：涉及 API、模块、Kit、能力、Sample，必须可在 `https://developer.huawei.com/consumer/cn/` 核对。
+4. **设备与应用形态一致**：手机/平板/PC/2in1/手表/轻量级穿戴/智慧屏与 Stage/元服务等不得混用、误配。
+5. **禁止臆造**：不得输出官网未声明的 API、导包、调用链、可运行结论。
 
 ## 输入与依赖
 - 用户问题：`{{user_query}}`
@@ -88,7 +87,7 @@ allowed-tools:
 当 `{{final_answer}}` 涉及“如何实现/如何打开/如何拉起/如何调用”等操作性问题时，样例代码为**必填**，不得仅给概念步骤。
 
 1. 仅可使用 consumer/cn 文档明确存在的 API、模块、导入与能力。
-2. 至少提供 1 条关键 API 对应的 consumer/cn 官方 URL，且须落在 **`harmonyos-references`** 文档树下；**不得**使用路径中含 **`harmonyos-references-` + 版本/代数后缀**（含 `harmonyos-references-V*` 等同类结构）的链接。
+2. 至少提供 1 条关键 API 对应的 consumer/cn 官方 URL。
 3. Demo 必须与 `{{harmonyos_execution_context}}` 一致（设备/形态/API）。
 4. 语言与工程形态需与官网样例一致（如 ArkTS/Stage）。
 5. 若官网暂无法支撑可执行代码，仍必须输出 `## 样例代码` 章节，内容写明“当前仅可提供伪代码/步骤说明”并附官方链接与缺失原因，禁止伪造可运行代码。
@@ -118,7 +117,7 @@ allowed-tools:
   - <示例1>
   - <示例2>
 - **官网引用**:
-  - <API 或能力名>：<完整 consumer/cn URL，API 参考须为 `harmonyos-references`（无版本后缀变体）；或说明“需在官网核对具体 API”>
+  - <API 或能力名>：<完整 consumer/cn URL 或说明“需在官网核对具体 API”>
 
 ## 最终答案
 <LLM 基于增强问题生成的最终答案，先给可执行思路，再给关键注意事项>
@@ -134,18 +133,18 @@ allowed-tools:
 ## 代码说明
 - 代码与上下文一致性：<如何满足设备/应用形态/API 下限>
 - 关键 API 与引用：
-  - <API 名称>：<consumer/cn URL，须为 `harmonyos-references` 文档树、禁止 `harmonyos-references-…` 版本后缀类路径>
+  - <API 名称>：<consumer/cn URL>
 ```
 
 ## 结果校验（输出前自检）
 输出前必须逐项检查，任一不满足则重试生成：
 1. 是否包含 `## 增强后的问题` 与 `## 最终答案`。
 2. 若采用 Demo 方案：是否包含 `## 样例代码（必填）` 且代码块非空；若回退原方案：是否明确给出“未采用 Demo 方案原因 + 官方核对链接”。
-3. 是否给出至少 1 条官方引用（URL 或明确核对说明）；凡含 API 参考链接，路径中是否**未**出现 `harmonyos-references` 带 **`-` + 版本/代数后缀** 的错误结构（含 `harmonyos-references-V*` 等；出现则须改为 `harmonyos-references` 下等价页或入口后再输出）。
+3. 是否给出至少 1 条官方引用（URL 或明确核对说明）。
 4. 若采用 Demo 方案：代码是否与 `{{harmonyos_execution_context}}` 一致；若回退原方案：步骤与限制说明是否与执行上下文一致。
 
 ## 页面兜底
 - 未命中垂域：`## 命中垂域` 写 `unknown`，`## 垂域知识` 写“未命中垂域知识”。
-- 未涉及可点名 API：官网引用写“本问答未涉及可点名 API，需在 consumer/cn 的 `harmonyos-references` 文档树（禁止带版本后缀的 references 路径）按能力章节核对”。
+- 未涉及可点名 API：官网引用写“本问答未涉及可点名 API，需在 consumer/cn 按能力章节核对”。
 - 最终答案为空：写“当前暂未生成答案，请稍后重试”。
 - 样例代码为空：判定本次生成失败，触发重新生成，不允许直接返回给用户。
