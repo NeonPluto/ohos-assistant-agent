@@ -42,7 +42,8 @@ model: haiku
 输入语义约束（新增）：
 - `badcase_question`：Badcase 原始问题（用户真实提问或失败样例问题）。
 - `missing_answer_title`：缺失的关键答案/知识标题（待补齐知识点）。
-- 处理原则：先针对上述两项做检索与证据抓取，再进行知识提取；仅在未检索到可核对证据时，才允许基于官方 API 进行抽象归纳。
+- 处理原则：检索时优先使用 `missing_answer_title` 作为主检索词，`badcase_question` 仅用于补充同义词、上下文与二次扩展；先完成证据抓取再进行知识提取；仅在未检索到可核对证据时，才允许基于官方 API 进行抽象归纳。
+- 冲突裁决：当 `badcase_question` 与 `missing_answer_title` 在检索意图、术语指向或结论范围上出现冲突时，一律以 `missing_answer_title` 语义为准，并据此确定主检索路径与证据筛选边界。
 
 产出须包含：垂域 `domain`；关系类型（`概念同一` / `同义关系` / `近义关系` / `语境关联` / `上下位关系` / `语义包含关系`）；`knowledge`、`ui_display`、`knowledge_graph`；2–4 个同类示例（跨设备/形态时标注适用范围）。
 
@@ -124,8 +125,8 @@ model: haiku
 ## 执行顺序（单轮一次完成，不得中断）
 
 0. **先做证据检索与抓取（新增强制步骤）**  
-   - 以 `badcase_question` 与 `missing_answer_title` 为主检索输入，先问“这个 badcase 缺的答案在官网哪里有明确表述”。  
-   - 优先使用文档中心搜索入口并显式带关键词参数：`https://developer.huawei.com/consumer/cn/doc/search?val=<URL编码检索词>&type=all`（关键词来自 `badcase_question` + `missing_answer_title`）。  
+   - 以 `missing_answer_title` 为第一优先检索输入，`badcase_question` 为辅助检索输入，先问“这个 badcase 缺的答案在官网哪里有明确表述”。  
+   - 优先使用文档中心搜索入口并显式带关键词参数：`https://developer.huawei.com/consumer/cn/doc/search?val=<URL编码检索词>&type=all`（首轮关键词必须来自 `missing_answer_title`，后续再叠加 `badcase_question` 做扩展检索）。  
    - 例如：`https://developer.huawei.com/consumer/cn/doc/search?val=%E5%A6%82%E4%BD%95%E8%A7%A3%E5%86%B3%E5%8F%8C%E5%B1%82%E7%BB%84%E4%BB%B6%E4%BD%BF%E7%94%A8%E7%9B%B8%E5%90%8C%E5%9C%86%E8%A7%92%E6%BC%8F%E7%BA%BF%E9%97%AE%E9%A2%98&type=all`。  
    - 仅当该路径无结果时，才可辅以 `web_search`（限定 consumer/cn）补充候选。  
    - 对候选结果执行 `web_fetch`，至少保留 1 条可核对证据；若输入显式给出某 URL，需优先尝试抓取该 URL。  
