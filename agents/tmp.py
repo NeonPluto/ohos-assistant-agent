@@ -1087,19 +1087,19 @@ def web_fetch(url: str) -> str:
 
 
 # 所有工具列表 —— 传给 ChatOpenAI.bind_tools()
-# ALL_TOOLS = [
-#     bash, read_file, write_file, edit_file, todo_write,
-#     subagent, load_skill, compress,
-#     background_run, check_background,
-#     task_create, task_get, task_update, task_list,
-#     spawn_teammate, list_teammates, send_message, read_inbox,
-#     broadcast, shutdown_request, plan_approval, idle, claim_task,
-#     web_search, web_fetch,
-# ]
-
 ALL_TOOLS = [
-    read_file, load_skill
+    bash, read_file, write_file, edit_file, todo_write,
+    subagent, load_skill, compress,
+    background_run, check_background,
+    task_create, task_get, task_update, task_list,
+    spawn_teammate, list_teammates, send_message, read_inbox,
+    broadcast, shutdown_request, plan_approval, idle, claim_task,
+    web_search, web_fetch,
 ]
+
+# ALL_TOOLS = [
+#     read_file, load_skill
+# ]
 
 # 工具名 -> 工具对象的映射，用于 tool_execute 节点中的分发
 TOOL_MAP = {t.name: t for t in ALL_TOOLS}

@@ -14,9 +14,13 @@ import os
 import re
 import threading
 import time
+import traceback
 import uuid
+from io import StringIO
 from pathlib import Path
-from typing import NotRequired, TypedDict
+from typing import Iterator, NotRequired, TypedDict
+from html.parser import HTMLParser
+import requests
 
 import gradio as gr
 from dotenv import load_dotenv
@@ -251,6 +255,96 @@ class SkillLoader:
         rest = (m.group(2) or "").lstrip("\n")
         return name, rest
 
+# ╔══════════════════════════════════════════════════════════════╗
+# ║                  Web 工具底层实现                              ║
+# ║  HTMLTextExtractor: 从 HTML 中提取纯文本                      ║
+# ║  web_search_impl: 使用 DuckDuckGo 搜索                       ║
+# ║  web_fetch_impl: 抓取网页并提取文本内容                        ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+class HTMLTextExtractor(HTMLParser):
+    """将 HTML 转为可读纯文本，跳过 script/style 等非内容标签。"""
+
+    SKIP_TAGS = {"script", "style", "noscript", "nav", "footer", "svg", "iframe"}
+    BLOCK_TAGS = {"p", "br", "div", "h1", "h2", "h3", "h4", "h5", "h6",
+                  "li", "tr", "td", "th", "blockquote", "pre", "section", "article"}
+
+    def __init__(self):
+        super().__init__()
+        self._buf = StringIO()
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP_TAGS:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+        if tag in self.BLOCK_TAGS:
+            self._buf.write("\n")
+
+    def handle_data(self, data):
+        if self._skip_depth == 0:
+            self._buf.write(data)
+
+    def get_text(self) -> str:
+        text = self._buf.getvalue()
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        return text.strip()
+
+def web_fetch_impl(url: str, max_chars: int = 50000) -> str:
+    """抓取 URL 内容，HTML 页面自动提取纯文本。"""
+    try:
+        resp = requests.get(
+            url, timeout=15,
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+        )
+        resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "")
+        if "text/html" in content_type:
+            parser = HTMLTextExtractor()
+            parser.feed(resp.text)
+            return parser.get_text()[:max_chars]
+        return resp.text[:max_chars]
+    except Exception as e:
+        return f"Fetch error: {e}"
+
+def web_search_impl(query: str, max_results: int = 5) -> str:
+    """通过 DuckDuckGo HTML 搜索并解析结果。无需额外依赖。"""
+    try:
+        resp = requests.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        # 解析 DuckDuckGo HTML 搜索结果
+        links = re.findall(
+            r'class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>', resp.text, re.DOTALL
+        )
+        snippets = re.findall(
+            r'class="result__snippet"[^>]*>(.*?)</(?:a|td|span)', resp.text, re.DOTALL
+        )
+        results = []
+        for i, (url, title) in enumerate(links[:max_results]):
+            title_clean = re.sub(r"<[^>]+>", "", title).strip()
+            snippet = re.sub(r"<[^>]+>", "", snippets[i]).strip() if i < len(snippets) else ""
+            # DuckDuckGo 的链接经过重定向编码，尝试提取真实 URL
+            real_url = url
+            uddg = re.search(r"uddg=([^&]+)", url)
+            if uddg:
+                from urllib.parse import unquote
+                real_url = unquote(uddg.group(1))
+            results.append(f"[{i + 1}] {title_clean}\n    URL: {real_url}\n    {snippet}")
+        return "\n\n".join(results) if results else "No results found."
+    except Exception as e:
+        return f"Search error: {e}"
+
 
 SKILLS = SkillLoader(SKILLS_DIR)
 
@@ -293,9 +387,20 @@ def list_files(path: str, suffix: str | None = None) -> str:
     return run_list_files(path, suffix)
 
 
-ALL_TOOLS = [load_skill, read_file, write_file, edit_file, list_files]
+@tool
+def web_search(query: str, max_results: int = 5) -> str:
+    """Search the web using DuckDuckGo. Returns titles, URLs, and snippets."""
+    return web_search_impl(query, max_results)
+
+
+@tool
+def web_fetch(url: str) -> str:
+    """Fetch a web page and extract its text content. Automatically strips HTML tags."""
+    return web_fetch_impl(url)
+
+ALL_TOOLS = [load_skill, read_file, write_file, edit_file, list_files, web_search, web_fetch]
 # 模型侧不暴露 load_skill：仅由运行时根据 `/invoke_skill` 或 WebUI 显式选择注入，避免误调虚构名称。
-FILE_TOOLS = [read_file, write_file, edit_file, list_files]
+FILE_TOOLS = [read_file, write_file, edit_file, list_files, web_search, web_fetch]
 TOOL_MAP = {t.name: t for t in ALL_TOOLS}
 FILE_TOOL_BY_NAME = {t.name: t for t in FILE_TOOLS}
 
@@ -390,8 +495,9 @@ def tool_execute_node(state: AgentState) -> dict:
             else:
                 output = f"Unknown tool: {tool_name}"
         except Exception as e:
-            output = f"Error: {e}"
-        print(f"> {tool_name}: {str(output)[:200]}")
+            tb = traceback.format_exc(limit=5)
+            output = f"Error: tool `{tool_name}` failed: {e}\nTraceback:\n{tb}"
+        print(f"> {tool_name}: {str(output)[:500]}")
         messages.append(ToolMessage(content=str(output), tool_call_id=tc["id"]))
 
     out: dict = {"messages": messages}
@@ -445,6 +551,20 @@ def _write_file_succeeded(messages: list[BaseMessage]) -> bool:
     return False
 
 
+def _collect_tool_errors(messages: list[BaseMessage], limit: int = 3) -> list[str]:
+    """提取最近的工具错误，帮助定位未落盘原因。"""
+    errors: list[str] = []
+    for msg in reversed(messages):
+        if not isinstance(msg, ToolMessage):
+            continue
+        text = message_content_to_text(msg.content).strip()
+        if text.startswith("Error:"):
+            errors.append(text)
+        if len(errors) >= limit:
+            break
+    return errors
+
+
 def run_agent_turn(messages: list[BaseMessage], tool_allowlist: list[str] | None = None) -> list[BaseMessage]:
     """执行一轮会话，返回更新后的历史消息。
 
@@ -465,6 +585,10 @@ def run_agent_turn(messages: list[BaseMessage], tool_allowlist: list[str] | None
         and "write_file" in tool_allowlist
         and not _write_file_succeeded(out)
     ):
+        recent_errors = _collect_tool_errors(out, limit=2)
+        error_hint = ""
+        if recent_errors:
+            error_hint = "\n\n[Runtime] 最近工具异常（用于定位未落盘）：\n- " + "\n- ".join(recent_errors)
         out.append(
             SystemMessage(
                 content=(
@@ -472,6 +596,7 @@ def run_agent_turn(messages: list[BaseMessage], tool_allowlist: list[str] | None
                     "\"Wrote … bytes to …\"）。\n若注入的 Skill 要求将知识/图谱/索引落盘，"
                     "请立即按该 Skill 的路径与结构调用 write_file；不要只用正文描述已保存。\n"
                     "若 Skill 规定不得落盘（如知识不合法），请仅用一两句话说明原因，勿重复上方长 Markdown。"
+                    + error_hint
                 )
             )
         )
@@ -597,11 +722,8 @@ class AgentRuntime:
             self.current_session = session_id
             self.history = self.store.load(session_id)
 
-    def run_query(self, query: str, ui_forced_skill: str | None = None) -> str:
-        """在当前会话执行一轮用户输入并持久化。
-
-        ui_forced_skill: WebUI 下拉显式指定的 skill 名；与首行 `/invoke_skill` 互斥时以首行为准。
-        """
+    def _prepare_turn(self, query: str, ui_forced_skill: str | None = None) -> tuple[str, list[str] | None]:
+        """解析用户输入，必要时注入显式 Skill，并返回正文与工具白名单。"""
         parsed_name, rest = SKILLS.parse_explicit_invoke_prefix(query)
         pending: str | None = None
         if parsed_name:
@@ -619,35 +741,72 @@ class AgentRuntime:
         else:
             body = query.strip()
 
-        with self.lock:
-            # 显式 Skill 须在「第一轮」模型调用前进入上下文：原先仅靠 pending_forced_skill
-            # 注入合成 load_skill 工具轮次，首轮真正生成答案的 LLM 往往晚于工具结果，
-            # 且部分环境下首跳状态未带上 pending，导致首条回复未按 SKILL 约束执行。
-            # 此处直接把已加载正文写入 SystemMessage（与 trusted load_skill 同源），无需用户二次确认。
-            skill_allow: list[str] | None = None
-            if pending and pending in SKILLS.skills:
-                skill_allow = SKILLS.tool_allowlist_for_skill(pending)
-                bind_hint = ""
-                if skill_allow:
-                    bind_hint = (
-                        "\n\n[Runtime 工具绑定] 本轮仅可调用以下工具（模型侧已限制，勿尝试其他工具）："
-                        + ", ".join(skill_allow)
-                        + "。"
-                    )
-                self.history.append(
-                    SystemMessage(
-                        content=(
-                            "用户已通过首行 `/invoke_skill` 或界面「显式启用 Skill」指定垂域 Skill；"
-                            "本轮回答须严格遵循其中流程与约束，不要追问用户是否启用。\n"
-                            + SKILLS.load(pending)
-                            + bind_hint
-                        )
+        skill_allow: list[str] | None = None
+        if pending and pending in SKILLS.skills:
+            skill_allow = SKILLS.tool_allowlist_for_skill(pending)
+            bind_hint = ""
+            if skill_allow:
+                bind_hint = (
+                    "\n\n[Runtime 工具绑定] 本轮仅可调用以下工具（模型侧已限制，勿尝试其他工具）："
+                    + ", ".join(skill_allow)
+                    + "。"
+                )
+            self.history.append(
+                SystemMessage(
+                    content=(
+                        "用户已通过首行 `/invoke_skill` 或界面「显式启用 Skill」指定垂域 Skill；"
+                        "本轮回答须严格遵循其中流程与约束，不要追问用户是否启用。\n"
+                        + SKILLS.load(pending)
+                        + bind_hint
                     )
                 )
+            )
+        return body, skill_allow
+
+    def run_query(self, query: str, ui_forced_skill: str | None = None) -> str:
+        """在当前会话执行一轮用户输入并持久化。
+
+        ui_forced_skill: WebUI 下拉显式指定的 skill 名；与首行 `/invoke_skill` 互斥时以首行为准。
+        """
+        with self.lock:
+            body, skill_allow = self._prepare_turn(query, ui_forced_skill)
             self.history.append(HumanMessage(content=body))
             self.history = run_agent_turn(self.history, tool_allowlist=skill_allow)
             self.store.save(self.current_session, self.history)
             return extract_final_response(self.history)
+
+    def run_query_stream(
+        self, query: str, ui_forced_skill: str | None = None
+    ) -> Iterator[dict]:
+        """流式执行一轮查询，逐步产出当前 messages 快照。"""
+        with self.lock:
+            body, skill_allow = self._prepare_turn(query, ui_forced_skill)
+            self.history.append(HumanMessage(content=body))
+            yield {"phase": "start", "messages": list(self.history)}
+
+            payload: AgentState = {"messages": list(self.history)}
+            if skill_allow:
+                payload["tool_allowlist"] = skill_allow
+
+            cfg = {"recursion_limit": _AGENT_RECURSION_LIMIT}
+            final_messages = list(self.history)
+            prev_msg_count = len(final_messages)
+
+            for snapshot in agent_graph.stream(payload, config=cfg, stream_mode="values"):
+                current_msgs = list(snapshot["messages"])
+                final_messages = current_msgs
+                if len(current_msgs) <= prev_msg_count:
+                    continue
+                prev_msg_count = len(current_msgs)
+                yield {"phase": "progress", "messages": current_msgs}
+
+            self.history = final_messages
+            self.store.save(self.current_session, self.history)
+            yield {
+                "phase": "done",
+                "messages": list(self.history),
+                "final_response": extract_final_response(self.history),
+            }
 
     def snapshot(self) -> dict:
         """返回当前会话状态给 WebUI 展示。"""
@@ -853,16 +1012,23 @@ def build_webui(runtime: AgentRuntime):
                 snap = runtime.snapshot()
                 with runtime.lock:
                     history = list(runtime.history)
-                return "", _chat_view_from_messages(history), _thinking_view_from_messages(history), history, snap
+                yield "", _chat_view_from_messages(history), _thinking_view_from_messages(history), history, snap
+                return
             ui_skill = None
             if forced_skill_choice and forced_skill_choice != "（不使用）":
                 ui_skill = forced_skill_choice
-            reply = runtime.run_query(text.strip(), ui_forced_skill=ui_skill)
-            with runtime.lock:
-                history = list(runtime.history)
-            snap = runtime.snapshot()
-            print(f"ASSISTANT[{snap['current_session']}]: {reply[:200]}")
-            return "", _chat_view_from_messages(history), _thinking_view_from_messages(history), history, snap
+            stream = runtime.run_query_stream(text.strip(), ui_forced_skill=ui_skill)
+            for event in stream:
+                history = event["messages"]
+                chat_view = _chat_view_from_messages(history)
+                if event["phase"] == "start":
+                    chat_view = list(chat_view)
+                    chat_view.append({"role": "assistant", "content": "⏳ Thinking..."})
+                snap = runtime.snapshot()
+                if event["phase"] == "done":
+                    reply = event.get("final_response", "")
+                    print(f"ASSISTANT[{snap['current_session']}]: {str(reply)[:200]}")
+                yield "", chat_view, _thinking_view_from_messages(history), history, snap
 
         refresh_btn.click(
             refresh_all,
