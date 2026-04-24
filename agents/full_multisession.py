@@ -42,7 +42,7 @@ load_dotenv(override=True)
 # =========================
 WORKDIR = Path.cwd()
 SKILLS_DIR = WORKDIR / "skills"
-SESSIONS_DIR = WORKDIR / ".sessions"
+SESSIONS_DIR = WORKDIR / ".full_multisession_sessions"
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "sk-placeholder")
 # 与 test.py 保持一致：优先使用 OPENAI_MODEL，其次 MODEL_ID

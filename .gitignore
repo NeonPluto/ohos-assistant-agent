@@ -63,3 +63,4 @@ data/spider/
 /data/spider
 .sessions/
 mytask/
+*sessions/

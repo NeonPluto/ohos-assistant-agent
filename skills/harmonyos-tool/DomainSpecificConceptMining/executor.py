@@ -2,10 +2,8 @@
 """
 DomainSpecificConceptMining executor.
 
-Read model output JSON, normalize required fields, then persist:
-- data payload to ./data/domain/<id>.json (includes harmonyos_context /
-  harmonyos_constraints / api_citations when present — see SKILL.md v4)
-- knowledge graph payload to ./data/knowledge/<id>.json
+Read model output JSON, normalize and validate knowledges payload, then persist:
+- knowledge payload to ./data/domain/knowledge/<id>.json
 """
 
 from __future__ import annotations
@@ -15,12 +13,12 @@ import json
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Persist DomainSpecificConceptMining output to data and knowledge folders."
+        description="Persist DomainSpecificConceptMining knowledges output to data/domain/knowledge."
     )
     parser.add_argument(
         "--input-file",
@@ -55,183 +53,146 @@ def ensure_non_empty(payload: Dict[str, Any], key: str) -> None:
         raise ValueError(f"Missing required field: {key}")
 
 
-def backfill_source_evidence(payload: Dict[str, Any]) -> None:
-    """
-    Backward compatibility:
-    - New schema prefers source_evidence.
-    - Older outputs may only include api_citations.
-    """
-    evidence = payload.get("source_evidence")
-    if isinstance(evidence, list) and evidence:
-        return
-
-    api_citations = payload.get("api_citations")
-    if not isinstance(api_citations, list):
-        return
-
-    rebuilt: list[Dict[str, Any]] = []
-    for item in api_citations:
-        if not isinstance(item, dict):
-            continue
-        url = item.get("url")
-        if not isinstance(url, str) or not url.strip():
-            continue
-        excerpt = item.get("notes") or item.get("name") or "Derived from api_citations."
-        rebuilt.append(
-            {
-                "url": url.strip(),
-                "page_title": item.get("name", ""),
-                "excerpt": str(excerpt),
-            }
-        )
-
-    if rebuilt:
-        payload["source_evidence"] = rebuilt
+def _ensure_non_empty_string(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Missing required field: {field}")
+    return value.strip()
 
 
-def validate_evidence(payload: Dict[str, Any]) -> None:
-    """Require consumer/cn evidence before accepting mined knowledge."""
-    evidence = payload.get("source_evidence")
-    if not isinstance(evidence, list) or not evidence:
-        raise ValueError(
-            "Missing required field: source_evidence (at least one consumer/cn evidence item is required)"
-        )
+def _normalize_legacy_knowledge(payload: Dict[str, Any]) -> List[Dict[str, Any]] | None:
+    """Backward compatibility for old single `knowledge` format."""
+    legacy = payload.get("knowledge")
+    if not isinstance(legacy, dict):
+        return None
 
-    valid_count = 0
-    for item in evidence:
-        if not isinstance(item, dict):
-            continue
-        url = item.get("url", "")
-        excerpt = item.get("excerpt", "")
-        if (
-            isinstance(url, str)
-            and url.startswith("https://developer.huawei.com/consumer/cn/")
-            and isinstance(excerpt, str)
-            and excerpt.strip()
-        ):
-            valid_count += 1
+    concept_pairs = legacy.get("concept_pairs")
+    if isinstance(concept_pairs, dict):
+        concrete_term = concept_pairs.get("concrete_term", "")
+        abstract_term = concept_pairs.get("abstract_term", "")
+        normalized_pairs = [{"concrete_term": concrete_term, "abstract_term": abstract_term}]
+    elif isinstance(concept_pairs, list):
+        normalized_pairs = concept_pairs
+    else:
+        normalized_pairs = []
 
-    if valid_count == 0:
-        raise ValueError(
-            "source_evidence must include at least one item with consumer/cn url and non-empty excerpt"
-        )
+    similar_examples = legacy.get("similar_examples")
+    if isinstance(similar_examples, list) and similar_examples and isinstance(similar_examples[0], str):
+        normalized_examples = [similar_examples]
+    elif isinstance(similar_examples, list):
+        normalized_examples = similar_examples
+    else:
+        normalized_examples = []
+
+    return [
+        {
+            "knowledge_sentence": legacy.get("knowledge_sentence", ""),
+            "relation_type": legacy.get("relation_type", ""),
+            "concept_pairs": normalized_pairs,
+            "similar_examples": normalized_examples,
+        }
+    ]
 
 
 def normalize(payload: Dict[str, Any]) -> Dict[str, Any]:
-    ensure_non_empty(payload, "domain")
-    backfill_source_evidence(payload)
-    validate_evidence(payload)
+    knowledges = payload.get("knowledges")
+    if knowledges is None:
+        knowledges = _normalize_legacy_knowledge(payload)
 
-    knowledge = payload.get("knowledge")
-    if not isinstance(knowledge, dict):
-        raise ValueError("Missing required object: knowledge")
+    if not isinstance(knowledges, list) or not knowledges:
+        raise ValueError("Missing required array: knowledges")
 
-    concept_pairs = knowledge.get("concept_pairs")
-    if not isinstance(concept_pairs, dict):
-        raise ValueError("Missing required object: knowledge.concept_pairs")
+    allowed_relation_types = {
+        "概念同一",
+        "同义关系",
+        "近义关系",
+        "语境关联",
+        "上下位关系",
+        "语义包含关系",
+    }
 
-    concrete_term = concept_pairs.get("concrete_term")
-    abstract_term = concept_pairs.get("abstract_term")
-    if not concrete_term or not abstract_term:
-        raise ValueError("knowledge.concept_pairs requires concrete_term and abstract_term")
+    normalized_knowledges: List[Dict[str, Any]] = []
+    for idx, item in enumerate(knowledges):
+        if not isinstance(item, dict):
+            raise ValueError(f"knowledges[{idx}] must be an object")
+
+        knowledge_sentence = _ensure_non_empty_string(
+            item.get("knowledge_sentence"),
+            f"knowledges[{idx}].knowledge_sentence",
+        )
+        relation_type = _ensure_non_empty_string(
+            item.get("relation_type"),
+            f"knowledges[{idx}].relation_type",
+        )
+        if relation_type not in allowed_relation_types:
+            raise ValueError(
+                f"knowledges[{idx}].relation_type must be one of: "
+                + " | ".join(sorted(allowed_relation_types))
+            )
+
+        concept_pairs = item.get("concept_pairs")
+        if not isinstance(concept_pairs, list) or len(concept_pairs) != 1:
+            raise ValueError(f"knowledges[{idx}].concept_pairs must contain exactly 1 pair")
+
+        pair = concept_pairs[0]
+        if not isinstance(pair, dict):
+            raise ValueError(f"knowledges[{idx}].concept_pairs[0] must be an object")
+        concrete_term = _ensure_non_empty_string(
+            pair.get("concrete_term"),
+            f"knowledges[{idx}].concept_pairs[0].concrete_term",
+        )
+        abstract_term = _ensure_non_empty_string(
+            pair.get("abstract_term"),
+            f"knowledges[{idx}].concept_pairs[0].abstract_term",
+        )
+
+        similar_examples = item.get("similar_examples")
+        if not isinstance(similar_examples, list) or len(similar_examples) != 1:
+            raise ValueError(f"knowledges[{idx}].similar_examples must contain exactly 1 example group")
+        examples = similar_examples[0]
+        if not isinstance(examples, list) or not (2 <= len(examples) <= 4):
+            raise ValueError(
+                f"knowledges[{idx}].similar_examples[0] must include 2-4 examples"
+            )
+        normalized_examples = []
+        for ex_idx, example in enumerate(examples):
+            normalized_examples.append(
+                _ensure_non_empty_string(
+                    example,
+                    f"knowledges[{idx}].similar_examples[0][{ex_idx}]",
+                )
+            )
+
+        normalized_knowledges.append(
+            {
+                "knowledge_sentence": knowledge_sentence,
+                "relation_type": relation_type,
+                "concept_pairs": [
+                    {"concrete_term": concrete_term, "abstract_term": abstract_term}
+                ],
+                "similar_examples": [normalized_examples],
+            }
+        )
 
     item_id = payload.get("id")
     if not item_id:
         time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         item_id = f"domain_knowledge_{time_str}_{uuid.uuid4().hex[:6]}"
-        payload["id"] = item_id
 
-    graph_id = f"kg_{item_id}"
-
-    domain = payload["domain"]
-    kg = payload.get("knowledge_graph", {})
-    if not isinstance(kg, dict):
-        kg = {}
-
-    # Build default knowledge graph if missing.
-    entities = kg.get("entities") or [
-        {"id": str(concrete_term), "name": str(concrete_term), "type": "concept"},
-        {"id": str(abstract_term), "name": str(abstract_term), "type": "concept"},
-        {"id": str(domain), "name": str(domain), "type": "domain"},
-    ]
-    relations = kg.get("relations") or [
-        {"subject": str(concrete_term), "predicate": "is_a", "object": str(abstract_term)},
-        {"subject": str(concrete_term), "predicate": "belongs_to_domain", "object": str(domain)},
-        {"subject": str(abstract_term), "predicate": "belongs_to_domain", "object": str(domain)},
-    ]
-    mapping = kg.get("mapping") or {
-        "concrete_to_abstract": f"{concrete_term} -> {abstract_term}",
-        "concept_to_domain": [f"{concrete_term} -> {domain}", f"{abstract_term} -> {domain}"],
-    }
-
-    payload["knowledge_graph"] = {
-        "graph_id": graph_id,
-        "entities": entities,
-        "relations": relations,
-        "mapping": mapping,
-    }
-
-    payload["storage"] = {
-        "data_file_path": f"./data/domain/{item_id}.json",
-        "knowledge_file_path": f"./data/knowledge/{item_id}.json",
-    }
-
-    # Minimal UI payload fallback, so frontend can always render something.
-    ui = payload.get("ui_display")
-    if not isinstance(ui, dict):
-        payload["ui_display"] = {
-            "title": f"{concrete_term} 与 {abstract_term} 的关系",
-            "summary": knowledge.get("knowledge_sentence", ""),
-            "tags": [str(domain), knowledge.get("relation_type", "未标注"), str(concrete_term), str(abstract_term)],
-            "graph_preview": {
-                "nodes": [
-                    {"id": str(concrete_term), "label": str(concrete_term), "type": "concrete"},
-                    {"id": str(abstract_term), "label": str(abstract_term), "type": "abstract"},
-                    {"id": str(domain), "label": str(domain), "type": "domain"},
-                ],
-                "edges": [
-                    {"source": str(concrete_term), "target": str(abstract_term), "relation": "下位于/同义于"},
-                    {"source": str(concrete_term), "target": str(domain), "relation": "属于垂域"},
-                    {"source": str(abstract_term), "target": str(domain), "relation": "属于垂域"},
-                ],
-            },
-        }
-
-    return payload
+    return {"id": item_id, "knowledges": normalized_knowledges}
 
 
 def write_outputs(payload: Dict[str, Any], workspace: Path) -> Dict[str, Path]:
-    data_dir = workspace / "data" / "domain"
-    knowledge_dir = workspace / "data" / "knowledge"
-    data_dir.mkdir(parents=True, exist_ok=True)
+    knowledge_dir = workspace / "data" / "domain" / "knowledge"
     knowledge_dir.mkdir(parents=True, exist_ok=True)
 
     item_id = payload["id"]
-    data_path = data_dir / f"{item_id}.json"
     knowledge_path = knowledge_dir / f"{item_id}.json"
+    knowledge_payload = {"knowledges": payload["knowledges"]}
 
-    data_payload = {
-        "id": payload["id"],
-        "domain": payload["domain"],
-        "source": payload.get("source", {}),
-        "source_evidence": payload.get("source_evidence", []),
-        "knowledge": payload["knowledge"],
-        "ui_display": payload["ui_display"],
-        "storage": payload["storage"],
-    }
-    for optional_key in ("harmonyos_context", "harmonyos_constraints", "api_citations"):
-        if optional_key in payload:
-            data_payload[optional_key] = payload[optional_key]
-    knowledge_payload = {
-        "id": payload["id"],
-        "domain": payload["domain"],
-        "knowledge_graph": payload["knowledge_graph"],
-        "storage": payload["storage"],
-    }
-
-    data_path.write_text(json.dumps(data_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    knowledge_path.write_text(json.dumps(knowledge_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"data_path": data_path, "knowledge_path": knowledge_path}
+    knowledge_path.write_text(
+        json.dumps(knowledge_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return {"knowledge_path": knowledge_path}
 
 
 def main() -> None:
@@ -242,7 +203,6 @@ def main() -> None:
 
     print("Persist success")
     print(f"id: {payload['id']}")
-    print(f"data: {result['data_path']}")
     print(f"knowledge: {result['knowledge_path']}")
 
 
