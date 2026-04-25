@@ -23,6 +23,7 @@ from io import StringIO
 from pathlib import Path
 from queue import Queue
 from typing import Iterator, Literal, NotRequired, TypedDict
+from urllib.parse import urlparse
 
 import gradio as gr
 import requests
@@ -33,6 +34,11 @@ from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
+from browser_content_fetcher import (
+    browser_urls_match,
+    fetch_rendered_page_content,
+    pinned_browser_fetch_url,
+)
 
 load_dotenv(override=True)
 
@@ -52,6 +58,7 @@ TOKEN_THRESHOLD = 100_000
 # 网络搜索最多多少层
 MAX_WEB_SEARCH_CALLS_PER_TURN = 20
 MAX_WEB_FETCH_CALLS_PER_TURN = 20
+MAX_BROWSER_FETCH_CALLS_PER_TURN = 10
 
 TEAM_DIR = WORKDIR / ".team"
 INBOX_DIR = TEAM_DIR / "inbox"
@@ -60,7 +67,7 @@ TRANSCRIPT_DIR = WORKDIR / ".transcripts"
 
 # Skill frontmatter `allowed-tools` 仅可限制下列名称（与 FILE_TOOLS 子集一致）
 BINDABLE_FILE_TOOL_NAMES = frozenset(
-    {"read_file", "write_file", "edit_file", "list_files", "web_search", "web_fetch"}
+    {"read_file", "write_file", "edit_file", "list_files", "web_search", "web_fetch", "browser_mcp"}
 )
 VALID_MSG_TYPES = {
     "message",
@@ -357,6 +364,37 @@ class HTMLTextExtractor(HTMLParser):
         return text.strip()
 
 
+_REFERENCE_URL_RE = re.compile(
+    r"(?is)\breference\s*:\s*(https?://[^\s\)\]\}'\"<>]+)",
+)
+
+
+def extract_reference_url_from_turn_text(text: str) -> str | None:
+    """
+    Parse `reference: https://...` from the user turn body (same line or following text).
+    Also accepts JSON objects with a string `reference` field.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    m = _REFERENCE_URL_RE.search(raw)
+    if m:
+        u = m.group(1).rstrip(").,;\"'")
+        if urlparse(u).scheme in {"http", "https"} and urlparse(u).netloc:
+            return u
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict):
+            r = obj.get("reference")
+            if isinstance(r, str):
+                u = r.strip()
+                if urlparse(u).scheme in {"http", "https"} and urlparse(u).netloc:
+                    return u
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return None
+
+
 def web_fetch_impl(url: str, max_chars: int = 50000) -> str:
     try:
         resp = requests.get(
@@ -406,6 +444,31 @@ def web_search_impl(query: str, max_results: int = 5) -> str:
         return "\n\n".join(results) if results else "No results found."
     except Exception as e:
         return f"Search error: {e}"
+
+
+def browser_mcp_impl(
+    action: str,
+    url: str = "",
+    timeout_ms: int = 15000,
+    post_wait_ms: int = 1000,
+    max_chars: int = 50000,
+    headless: bool = False,
+) -> str:
+    normalized = (action or "").strip().lower()
+    if normalized in {"fetch", "fetch_topic_content", "navigate_and_fetch"}:
+        if not url.strip():
+            return "Error: browser_mcp action 'fetch' requires non-empty url"
+        return fetch_rendered_page_content(
+            url=url,
+            timeout_ms=timeout_ms,
+            post_wait_ms=post_wait_ms,
+            max_chars=max_chars,
+            headless=headless,
+        )
+    return (
+        "Error: unsupported browser_mcp action. "
+        "Supported actions: fetch|fetch_topic_content|navigate_and_fetch"
+    )
 
 
 # =========================
@@ -1019,6 +1082,30 @@ def web_fetch(url: str) -> str:
     return web_fetch_impl(url)
 
 
+@tool
+def browser_mcp(
+    action: str,
+    url: str = "",
+    timeout_ms: int = 15000,
+    post_wait_ms: int = 1000,
+    max_chars: int = 50000,
+    headless: bool = True,
+) -> str:
+    """Local Browser MCP for rendered topic-content fetching.
+
+    When the user message includes `reference: https://...`, the runtime only loads
+    that reference URL in the browser (model-provided `url` for fetch is ignored).
+    """
+    return browser_mcp_impl(
+        action=action,
+        url=url,
+        timeout_ms=timeout_ms,
+        post_wait_ms=post_wait_ms,
+        max_chars=max_chars,
+        headless=headless,
+    )
+
+
 ALL_TOOLS = [
     bash,
     load_skill,
@@ -1045,6 +1132,7 @@ ALL_TOOLS = [
     claim_task,
     web_search,
     web_fetch,
+    browser_mcp,
 ]
 # 模型侧不暴露 load_skill：仅运行时注入
 FILE_TOOLS = [t for t in ALL_TOOLS if t.name != "load_skill"]
@@ -1084,11 +1172,14 @@ class AgentState(TypedDict):
     tool_allowlist: NotRequired[list[str] | None]
     web_search_calls: NotRequired[int]
     web_fetch_calls: NotRequired[int]
+    browser_mcp_calls: NotRequired[int]
     web_tools_blocked: NotRequired[bool]
+    # When set, browser_mcp fetch is forced to this URL only (from user `reference:` line).
+    browser_mcp_allowed_url: NotRequired[str | None]
 
 
 def _tools_for_allowlist(allowlist: list[str] | None, web_tools_blocked: bool = False) -> list:
-    blocked_names = {"web_search", "web_fetch"} if web_tools_blocked else set()
+    blocked_names = {"web_search", "web_fetch", "browser_mcp"} if web_tools_blocked else set()
     if not allowlist:
         return [t for t in FILE_TOOLS if t.name not in blocked_names]
     picked = [FILE_TOOL_BY_NAME[n] for n in allowlist if n in FILE_TOOL_BY_NAME and n not in blocked_names]
@@ -1117,7 +1208,9 @@ def preprocess_node(state: AgentState) -> dict:
         "rounds_without_todo": state.get("rounds_without_todo", 0),
         "web_search_calls": state.get("web_search_calls", 0),
         "web_fetch_calls": state.get("web_fetch_calls", 0),
+        "browser_mcp_calls": state.get("browser_mcp_calls", 0),
         "web_tools_blocked": state.get("web_tools_blocked", False),
+        "browser_mcp_allowed_url": state.get("browser_mcp_allowed_url"),
     }
 
 
@@ -1171,7 +1264,9 @@ def llm_call_node(state: AgentState) -> dict:
         "rounds_without_todo": state.get("rounds_without_todo", 0),
         "web_search_calls": state.get("web_search_calls", 0),
         "web_fetch_calls": state.get("web_fetch_calls", 0),
+        "browser_mcp_calls": state.get("browser_mcp_calls", 0),
         "web_tools_blocked": web_tools_blocked,
+        "browser_mcp_allowed_url": state.get("browser_mcp_allowed_url"),
     }
     if allowlist is not None:
         out["tool_allowlist"] = allowlist
@@ -1184,6 +1279,7 @@ def tool_execute_node(state: AgentState) -> dict:
     allowlist = state.get("tool_allowlist")
     web_search_calls = state.get("web_search_calls", 0)
     web_fetch_calls = state.get("web_fetch_calls", 0)
+    browser_mcp_calls = state.get("browser_mcp_calls", 0)
     web_tools_blocked = state.get("web_tools_blocked", False)
     trusted = isinstance(last_msg, AIMessage) and bool(last_msg.additional_kwargs.get("trusted_programmatic_skill"))
     used_todo = False
@@ -1213,6 +1309,12 @@ def tool_execute_node(state: AgentState) -> dict:
                     "请基于已抓取内容输出结论，或请求用户提供可访问的目标链接。"
                 )
                 hit_web_limit = True
+            elif tool_name == "browser_mcp" and browser_mcp_calls >= MAX_BROWSER_FETCH_CALLS_PER_TURN:
+                output = (
+                    f"Error: browser_mcp 调用已达本轮上限（{MAX_BROWSER_FETCH_CALLS_PER_TURN} 次），"
+                    "请基于已抓取内容输出结论，或请求用户提供更具体页面范围后重试。"
+                )
+                hit_web_limit = True
             elif tool_name == "compress":
                 compress_requested = True
                 output = "Compressing conversation..."
@@ -1222,6 +1324,20 @@ def tool_execute_node(state: AgentState) -> dict:
                     output = f"Error: Skill「{name}」为显式启用专用，已拒绝本次 load_skill。"
                 else:
                     output = SKILLS.load(name)
+            elif tool_name == "browser_mcp":
+                allowed = (state.get("browser_mcp_allowed_url") or "").strip()
+                eff_args = dict(tool_args or {})
+                if allowed:
+                    req = str(eff_args.get("url") or "").strip()
+                    if req and not browser_urls_match(req, allowed):
+                        _api_logger.info(
+                            "[main] browser_mcp URL pinned to user reference | model_url=%s | enforced=%s",
+                            req,
+                            allowed,
+                        )
+                    eff_args["url"] = allowed
+                with pinned_browser_fetch_url(allowed or None):
+                    output = handler.invoke(eff_args) if handler else f"Unknown tool: {tool_name}"
             else:
                 output = handler.invoke(tool_args) if handler else f"Unknown tool: {tool_name}"
         except Exception as e:
@@ -1234,6 +1350,8 @@ def tool_execute_node(state: AgentState) -> dict:
             web_search_calls += 1
         if tool_name == "web_fetch" and not str(output).startswith("Error: web_fetch 调用已达本轮上限"):
             web_fetch_calls += 1
+        if tool_name == "browser_mcp" and not str(output).startswith("Error: browser_mcp 调用已达本轮上限"):
+            browser_mcp_calls += 1
         _api_logger.info("[main] Tool done | name=%s | output=%s", tool_name, str(output)[:800])
         messages.append(ToolMessage(content=str(output), tool_call_id=tc["id"]))
     if compress_requested:
@@ -1245,7 +1363,7 @@ def tool_execute_node(state: AgentState) -> dict:
         messages.append(
             HumanMessage(
                 content=(
-                    "<runtime-hint>web_search/web_fetch 已达本轮上限，后续请禁止继续检索，"
+                    "<runtime-hint>web_search/web_fetch/browser_mcp 已达本轮上限，后续请禁止继续检索，"
                     "直接基于已有工具结果完成后续分析与最终回答。</runtime-hint>"
                 )
             )
@@ -1257,7 +1375,9 @@ def tool_execute_node(state: AgentState) -> dict:
         "rounds_without_todo": rounds,
         "web_search_calls": web_search_calls,
         "web_fetch_calls": web_fetch_calls,
+        "browser_mcp_calls": browser_mcp_calls,
         "web_tools_blocked": web_tools_blocked,
+        "browser_mcp_allowed_url": state.get("browser_mcp_allowed_url"),
     }
     if allowlist is not None:
         out["tool_allowlist"] = allowlist
@@ -1454,10 +1574,15 @@ class AgentRuntime:
             self.history.append(HumanMessage(content=body))
             yield {"phase": "start", "messages": list(self.history)}
 
+            ref_url = extract_reference_url_from_turn_text(body)
             payload: AgentState = {"messages": list(self.history), "rounds_without_todo": 0}
             payload["web_search_calls"] = 0
             payload["web_fetch_calls"] = 0
+            payload["browser_mcp_calls"] = 0
             payload["web_tools_blocked"] = False
+            payload["browser_mcp_allowed_url"] = ref_url
+            if ref_url:
+                _api_logger.info("[runtime] browser_mcp locked to reference URL | url=%s", ref_url)
             if skill_allow:
                 payload["tool_allowlist"] = skill_allow
             cfg = {"recursion_limit": _AGENT_RECURSION_LIMIT}
@@ -1602,7 +1727,7 @@ def build_webui(runtime: AgentRuntime):
             with gr.Column(scale=1, min_width=320):
                 with gr.Accordion("🧭 会话切换", open=True):
                     session_id_input = gr.Textbox(label="Session ID", value=runtime.current_session)
-                    gen_uuid_btn = gr.Button("🎲 生成 UUID", variant="secondary")
+                    gen_uuid_btn = gr.Button("🕒 生成时间ID", variant="secondary")
                     with gr.Row():
                         switch_btn = gr.Button("切换/创建")
                         switch_new_btn = gr.Button("切换并重置")
@@ -1746,13 +1871,21 @@ def build_webui(runtime: AgentRuntime):
             runtime.switch_session(session_id, new_context=False)
             return refresh_all()
 
+        def _new_time_session_id() -> str:
+            # 统一使用 YYYY-MM-ddHHMMSS 作为会话名，且避免同秒重复。
+            while True:
+                session_id = time.strftime("%Y-%m-%d%H%M%S")
+                if not runtime.store.exists(session_id):
+                    return session_id
+                time.sleep(1)
+
         def create_new_session():
-            session_id = f"chat_{time.strftime('%Y%m%d_%H%M%S')}"
+            session_id = _new_time_session_id()
             runtime.switch_session(session_id, new_context=True)
             return refresh_all()
 
         def generate_session_and_switch():
-            session_id = str(uuid.uuid4())
+            session_id = _new_time_session_id()
             runtime.switch_session(session_id, new_context=True)
             return refresh_all()
 
