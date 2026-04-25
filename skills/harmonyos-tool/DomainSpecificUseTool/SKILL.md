@@ -1,6 +1,6 @@
 ---
 name: 垂域知识增强问答专家
-description: 面向 HarmonyOS 问答，读取垂域知识并增强问题后调用 LLM 作答；受 API12+、consumer/cn 可核对、API 参考 URL（doc/harmonyos-references、禁 V* 与缺 doc、禁未校验 404 链）、设备/形态一致约束，并强制输出样例代码。
+description: 面向 HarmonyOS 问答，直接读取 knowledge 文件并增强问题后调用 LLM 作答；不依赖索引文件；受 API12+、consumer/cn 可核对、API 参考 URL（doc/harmonyos-references、禁 V* 与缺 doc、禁未校验 404 链）、设备/形态一致约束，并强制输出样例代码。
 version: 4.6.0
 explicit_invoke_only: true
 allowed-tools:
@@ -35,28 +35,25 @@ allowed-tools:
 - `{{user_query}}`
 
 ## 内部路径变量
-- `{{domain_index_dir}} = ./data/domain/index/`
+- `{{knowledge_dir}} = ./data/domain/knowledge/`
 
 ## 强制流程
 
 ### 1) 读取知识（先做）
-禁止全量遍历。须按序：
-1. 列出 `{{domain_index_dir}}` 下全部索引**文件名**（不读全量内容）。
-2. 从 `{{user_query}}` 判垂域（主题/意图/术语）。
-3. 垂域-文件名匹配；关系仅限：**概念同一、同义、近义、语境关联、上下位、语义包含**；任一命中即候选。
-4. 只读**候选**索引全文，取 `knowledge_sentence`、`knowledge_file_path` 等。
-5. 以 `knowledge_sentence` 再筛：与 `{{user_query}}` 语义靠近才保留。
-6. 对保留项按 `knowledge_file_path` 读全文，汇总 `{{domain_knowledge}}`。
-7. 用 `{{user_query}}` + `{{domain_knowledge}}` + `{{harmonyos_execution_context}}` 生成增强问题，后续一致。
+不依赖索引文件。须按序：
+1. 列出 `{{knowledge_dir}}` 下全部 knowledge **文件名**（不读取无关目录）。
+2. 按文件顺序从头到尾依次读取全部 knowledge 文件内容（每个文件应为 `{"knowledges": [...]}` 结构），不得基于文件名做筛选或跳读。
+3. 对每个文件内的 `knowledges` 逐条遍历：以 `knowledge_sentence` + `concept_pairs` 判断与 `{{user_query}}` 的语义相关性，相关项保留到 `{{domain_knowledge}}`。
+4. 所有文件遍历完成后，用 `{{user_query}}` + `{{domain_knowledge}}` + `{{harmonyos_execution_context}}` 生成增强问题，后续一致。
 
-执行要求：无候选不得全量读，走未命中；候选过多则优先最相近少量；`knowledge_sentence` 不靠近则不得读对应 `knowledge_file_path` 全文。
+执行要求：禁止读取索引文件；必须按文件顺序完整遍历；禁止按文件名预筛或仅读取部分文件；`knowledge_sentence` 不靠近则剔除；未命中则走未命中路径。
 
-至少提取：`domain`，`knowledge.knowledge_sentence`、`relation_type`、`concept_pairs`、`similar_examples`，`knowledge_graph.relations`（若有），`harmonyos_context`（若有：`os`、`api_version_min`、`target_device_profiles`、`application_form`、`assumption_note`），`harmonyos_constraints`、`api_citations`（若有）。
+至少提取：`knowledges[]` 中每条的 `knowledge_sentence`、`relation_type`、`concept_pairs`（对象数组，且长度应为 1）、`similar_examples`（二维数组，且长度应为 1，与概念对一一对应）。
 
-变量：`{{matched_domain}}`，`{{domain_knowledge}}`，`{{harmonyos_execution_context}}`（无 `harmonyos_context` 时默认「手机 + Stage + API12+」，并注明手表/元服务须另核官网）。
+变量：`{{matched_domain}}`（无法稳定判断时为 `unknown`），`{{domain_knowledge}}`，`{{harmonyos_execution_context}}`（默认「手机 + Stage + API12+」，并注明手表/元服务须另核官网）。
 
 ### 2) 问题增强
-由 `{{user_query}}` + `{{domain_knowledge}}` + `{{harmonyos_execution_context}}` 得 `{{enhanced_query}}`：意图不变；只保留最相关 1–3 条；不与设备/形态/API 下限冲突；未命中则原问题 + 标注「未命中垂域知识」。
+由 `{{user_query}}` + `{{domain_knowledge}}` + `{{harmonyos_execution_context}}` 得 `{{enhanced_query}}`：意图不变；只保留最相关 1-3 条；不与设备/形态/API 下限冲突；未命中则原问题 + 标注「未命中垂域知识」。
 
 ### 3) 展示增强问题
 须含：`enhanced_question`，`domain`（无则 `unknown`），`harmonyos_execution_context`，`domain_knowledge`（可摘要）。
@@ -93,10 +90,11 @@ allowed-tools:
 <OS / API 下限 / 设备 / 形态 / 假设>
 
 ## 垂域知识
+<按 1-3 条命中知识逐条展示，每条包含以下字段>
 - **知识陈述**: <knowledge_sentence>
 - **关系类型**: <relation_type>
-- **概念对**: <concrete_term> -> <abstract_term>
-- **相似示例**: <示例>
+- **概念对**: <concept_pairs[]，单条知识仅 1 组，展示 concrete_term -> abstract_term>
+- **相似示例**: <similar_examples[]，单条知识仅 1 组，与概念对一一对应>
 - **官网引用**: <consumer/cn URL，符合第 4 条；否则入口 + 检索词或说明须官网核对>
 
 ## 最终答案
