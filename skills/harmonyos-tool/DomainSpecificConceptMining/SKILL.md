@@ -37,11 +37,9 @@ model: haiku
 {
   "knowledges": [
     {
-      "knowledge_sentence": "",
       "relation_type": "概念同一|同义关系|近义关系|语境关联|上下位关系|语义包含关系",
-      "concept_pairs": [
-        {"concrete_term": "", "abstract_term": ""}
-      ],
+      "abstract_term":"",
+      "concrete_term":"",
       "similar_examples": [
         ["", ""]
       ]
@@ -52,8 +50,8 @@ model: haiku
 ## 执行流程
 1. 识别 `badcase_question` 与 `missing_answer_title` 的语义差距。
 2. 从输入中抽取候选名词/实体，按语义去重后形成“待挖掘名词列表”。
-3. 对每个名词独立执行一次挖掘：判定关系类型（`概念同一` / `同义关系` / `近义关系` / `语境关联` / `上下位关系` / `语义包含关系`），并生成对应 `knowledge_sentence`。
-4. 每条 knowledge 仅允许 1 组 `concept_pairs`（即 1 个 concrete_term + 1 个 abstract_term），并提供 1 组 `similar_examples`（二维数组中的一个子数组，2-4 个示例）。
+3. 对每个名词独立执行一次挖掘：判定关系类型（`概念同一` / `同义关系` / `近义关系` / `语境关联` / `上下位关系` / `语义包含关系`）。
+4. 每条 knowledge 仅允许 1 个 concrete_term + 1 个 abstract_term，并提供 1 组 `similar_examples`（二维数组中的一个子数组，2-4 个示例）。
 5. 将多条单概念 knowledge 汇总到 `knowledges` 数组中输出；若仅识别到 1 个名词，则 `knowledges` 长度为 1。
 
 ## 落盘规则（仅 1 次 write_file）
@@ -66,12 +64,12 @@ model: haiku
 ## 对话输出要求
 1. 先输出可读 Markdown：
    - `## Knowledge 挖掘结果`
-   - 按序号展示每条 knowledge 的 `knowledge_sentence`、`relation_type`、`concept_pairs`、`similar_examples`
+   - 按序号展示每条 knowledge 的 `relation_type`、`abstract_term`、`concrete_term`、`similar_examples`
 2. 若已落盘，最后一句固定为：
    - `✅ 已完成 knowledge 落盘，ID <id>。`
 3. 禁止在对话中输出文件路径、索引信息、知识图谱信息。
 
 ## 自检清单
-- [ ] 输出 JSON 顶层仅包含 `knowledges` 字段；每条 knowledge 仅包含 4 个字段（knowledge_sentence / relation_type / concept_pairs / similar_examples）
-- [ ] 每条 knowledge 的 `concept_pairs` 长度必须为 1（单概念），`similar_examples` 长度必须为 1，且与该条 `concept_pairs` 一一对应
+- [ ] 输出 JSON 顶层仅包含 `knowledges` 字段；每条 knowledge 仅包含 4 个字段（relation_type / concept_pairs / similar_examples）
+- [ ] 每条 knowledge 只有 1 个 concrete_term + 1 个 abstract_term（单概念），`similar_examples` 长度必须为 1，且与该条 `concept_pairs` 一一对应
 - [ ] 若输入含多个名词，`knowledges` 必须产出多条记录，且各条之间不混合概念

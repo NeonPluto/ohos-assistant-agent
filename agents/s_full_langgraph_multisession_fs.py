@@ -308,6 +308,7 @@ llm = ChatOpenAI(
     base_url=os.environ.get("OPENAI_BASE_URL"),
     api_key=os.environ.get("OPENAI_API_KEY", "sk-placeholder"),
     max_tokens=8000,
+    temperature=1.0,
 )
 
 SYSTEM_PROMPT = (

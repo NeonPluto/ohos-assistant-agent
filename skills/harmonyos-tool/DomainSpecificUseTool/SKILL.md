@@ -29,7 +29,7 @@ allowed-tools:
    - **禁 404**：写入答案的每条 consumer/cn URL（含官网引用、关键 API、Markdown/裸链）交付前须对用户为有效页、非 404；有网络/`fetch`/浏览器时对**拟写入**的每条做校验（非 404；30x 则落地页须为有效文档）。未通过或无法校验时**不得**输出该深链，仅保留已验证入口 `https://developer.huawei.com/consumer/cn/doc/harmonyos-references` + 文档内检索词（模块名、API 名、`@ohos.xxx` 等）；仅能验证入口时同理，不写入未验证深链。  
    - 检索/书签/用户粘贴的错链须改为等价正确页或退回入口再检索。
 5. **设备与应用形态一致**：手机/平板/PC/2in1/手表/轻量级穿戴/智慧屏与 Stage/元服务等不得混用、误配。
-6. **禁止臆造**：不得输出官网未声明的 API、导包、调用链或可运行结论。
+6. **禁止臆造**：不得输出官网未声明的 API、导包、调用链或可运行结论,不得直接将Android、IOS等其他操作系统的内容直接使用。
 
 ## 输入与依赖
 - `{{user_query}}`
@@ -43,12 +43,12 @@ allowed-tools:
 不依赖索引文件。须按序：
 1. 列出 `{{knowledge_dir}}` 下全部 knowledge **文件名**（不读取无关目录）。
 2. 按文件顺序从头到尾依次读取全部 knowledge 文件内容（每个文件应为 `{"knowledges": [...]}` 结构），不得基于文件名做筛选或跳读。
-3. 对每个文件内的 `knowledges` 逐条遍历：以 `knowledge_sentence` + `concept_pairs` 判断与 `{{user_query}}` 的语义相关性，相关项保留到 `{{domain_knowledge}}`。
+3. 对每个文件内的 `knowledges` 逐条遍历：以 `abstract_term`+`relation_type` + `similar_examples` 判断与 `{{user_query}}` 的语义相关性，相关项保留到 `{{domain_knowledge}}`。
 4. 所有文件遍历完成后，用 `{{user_query}}` + `{{domain_knowledge}}` + `{{harmonyos_execution_context}}` 生成增强问题，后续一致。
 
-执行要求：禁止读取索引文件；必须按文件顺序完整遍历；禁止按文件名预筛或仅读取部分文件；`knowledge_sentence` 不靠近则剔除；未命中则走未命中路径。
+执行要求：禁止读取索引文件；必须按文件顺序完整遍历；禁止按文件名预筛或仅读取部分文件；`abstract_term` 不靠近则剔除；未命中则走未命中路径。
 
-至少提取：`knowledges[]` 中每条的 `knowledge_sentence`、`relation_type`、`concept_pairs`（对象数组，且长度应为 1）、`similar_examples`（二维数组，且长度应为 1，与概念对一一对应）。
+至少提取：`knowledges[]` 中每条的 `relation_type`、`abstract_term`（对象数组，且长度应为 1）。
 
 变量：`{{matched_domain}}`（无法稳定判断时为 `unknown`），`{{domain_knowledge}}`，`{{harmonyos_execution_context}}`（默认「手机 + Stage + API12+」，并注明手表/元服务须另核官网）。
 
@@ -83,17 +83,13 @@ allowed-tools:
 ## 增强后的问题
 <文本>
 
-## 命中垂域
-<垂域或 unknown>
-
 ## HarmonyOS 执行上下文
 <OS / API 下限 / 设备 / 形态 / 假设>
 
 ## 垂域知识
 <按 1-3 条命中知识逐条展示，每条包含以下字段>
-- **知识陈述**: <knowledge_sentence>
 - **关系类型**: <relation_type>
-- **概念对**: <concept_pairs[]，单条知识仅 1 组，展示 concrete_term -> abstract_term>
+- **概念对**: <展示 concrete_term -> abstract_term>
 - **相似示例**: <similar_examples[]，单条知识仅 1 组，与概念对一一对应>
 - **官网引用**: <consumer/cn URL，符合第 4 条；否则入口 + 检索词或说明须官网核对>
 
@@ -119,7 +115,6 @@ allowed-tools:
 5. Demo：代码与 `{{harmonyos_execution_context}}` 一致；原方案：步骤/限制与上下文一致。
 
 ## 页面兜底
-- 未命中垂域：`unknown` + 「未命中垂域知识」。  
 - 无可点名 API：说明须在 `doc/harmonyos-references` 树核对（含 `doc/`、禁 V*），勿写未校验深链。  
 - 最终答案为空：「当前暂未生成答案，请稍后重试」。  
 - 样例代码为空：视为失败，重生成，不得直接交付。

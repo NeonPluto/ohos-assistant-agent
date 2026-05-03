@@ -64,3 +64,4 @@ data/spider/
 .sessions/
 mytask/
 *sessions/
+datasets/
